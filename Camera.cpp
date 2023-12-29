@@ -12,7 +12,7 @@ Camera::Camera(float r, float h)
 	this->radius = r;
 	this->height = h;
 	this->arc = 0;
-	this->speed = 0.05;
+	this->speed = 0.15;
 	this->lookAt.setPoint(0, 0, 0);
 	move();
 }
@@ -24,6 +24,7 @@ void Camera::move()
 		this->radius * cos(this->arc) + this->lookAt.posZ());
 }
 
+// 键盘控制前后左右移动
 void Camera::horizentalMove(int direction)
 {
 	float theta_x = 0, theta_z = 0;
@@ -54,6 +55,7 @@ void Camera::horizentalMove(int direction)
 	move();
 }
 
+// 鼠标控制上下移动
 void Camera::mouseMove(int x, int y, int& fx, int& fy)
 {
 	int dx = x - fx;

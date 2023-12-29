@@ -3,33 +3,122 @@
 #include <iostream>
 #include <string>
 #include <fstream>
+#include <random>
 #include <stdlib.h>
 #include "Camera.h"
 #include "Wall.h"
+#include "Ball.h"
+#include "Collision.cuh"
+
+//#define TEST
+#ifdef TEST
+    LARGE_INTEGER t1, t2, tc;
+    int update_times = 0;
+#endif // TEST
+
 
 Camera camera(30, 30);
 int fx, fy;
 const float interval = 0.02;
-const float length = 10, width = 10, height = 20;
+const float max_radius = 1;
+float length, width, height;
+int column;
+float grid_size;
+int grid_x, grid_y, grid_z;
+int ball_nums;
 Wall walls[6];
+Ball *balls;
 
-// 需读入数据
+void readConfig() {
+    std::ifstream file("./config.txt");
+    if (!file.is_open()) { // 检查文件是否成功打开
+        std::cerr << "无法打开文件\n";
+        exit(-1);
+    }
 
+    float temp[10] = { 0 };
+    std::string input;
+    int k = 0;
+    while (file >> input) {
+        temp[k++] = std::stof(input);
+        //std::cout << tmp[k - 1] << ' ';
+    }
 
-void init();
-void setCamera();
-void drawScene();
-void drawPolygon(Point a, Point b, Point c, Point d);
-void readConfig();
+    file.close(); // 关闭文件
+    length = temp[0];
+    width = temp[1];
+    height = temp[2];
+    column = temp[3];
+    ball_nums = column * column * column;
+}
 
+// 渲染墙壁
 void drawWalls() {
-   /* for (auto wall : walls) {
-        wall.renderWall();
-    }*/
-    for (int i = 0; i < 5; i++)
+    // 3面不画便于观察
+    for (int i = 0; i < 3; i++)
         walls[i].renderWall();
 }
 
+// 渲染小球
+void drawBalls() {
+    for (int i = 0; i < ball_nums; i++) {
+        balls[i].render();
+    }
+}
+
+// 初始化小球
+void initBalls() {
+    balls = new Ball[ball_nums];
+    grid_size = max_radius * 1.5;
+    grid_x = ceil(length * 2 / grid_size);
+    grid_y = ceil(height / grid_size);
+    grid_z = ceil(width * 2 / grid_size);
+    GLfloat color[4] = { 0.2, 0.3, 0.4, 1 };
+
+    // 小球平均初始化于空间中
+    float diff_x = (2 * length - 2 * max_radius) / (column - 1);
+    float diff_z = (2 * width - 2 * max_radius) / (column - 1);
+    float diff_y = (height - 2 * max_radius) / (column - 1);
+
+    for (int i = 0; i < column; i++)
+    {
+        for (int j = 0; j < column; j++)
+        {
+            for (int k = 0; k < column; k++)
+            {
+                int index = i * column * column + j * column + k;
+
+                float place_x = diff_x * i + max_radius - length;
+                float place_z = diff_z * j + max_radius - width;
+                float place_y = diff_y * k + max_radius;
+                Point pos(place_x, place_y, place_z);
+
+                std::random_device rd;
+                std::mt19937 gen(rd());
+                std::uniform_real_distribution<> dis1(-15, 15);
+                // 速度在-15到15之间
+                float speed_x = dis1(gen);
+                float speed_y = dis1(gen);
+                float speed_z = dis1(gen);
+                Point speed(speed_x, speed_y, speed_z);
+
+                // 半径在0.5到1.5之间
+                std::uniform_real_distribution<> dis2(0.5, 1.5);
+                float radius = dis2(gen);
+                // 质量在0.5到1.5之间
+                float weight = dis2(gen);
+                // 系数在0.5到1之间
+                std::uniform_real_distribution<> dis3(0, 0.5);
+                float coefficient = dis3(gen);
+
+                balls[index].init(pos, radius, speed, weight, coefficient, color);
+            }
+        }
+
+    }
+}
+
+// 初始化墙壁
 void initWalls() {
     Point bottomA(-length, 0, -width);
     Point bottomB(-length, 0, width);
@@ -74,6 +163,17 @@ void reshape(int w, int h) {
 
 void update(int value)
 {
+#ifdef TEST
+    update_times++;
+    if (update_times == 1000) {
+        std::cout << "render 1000 times\n";
+        QueryPerformanceCounter(&t2);
+        double time = (double)(t2.QuadPart - t1.QuadPart) / (double)tc.QuadPart;
+        std::cout << "time = " << time << std::endl;
+        exit(0);
+    }
+#endif // TEST
+
     glutPostRedisplay();
     glutTimerFunc(20, update, 1);
 }
@@ -81,7 +181,6 @@ void update(int value)
 void onKeyClick(unsigned char key, int x, int y)
 {
     int type = -1;
-    //std::cout << x << ',' << y << std::endl;
     if (key == 'w')
     {
         type = 0;
@@ -101,43 +200,26 @@ void onKeyClick(unsigned char key, int x, int y)
     camera.horizentalMove(type);
 }
 
-int main(int argc, char** argv) {
-    glutInit(&argc, argv);
-    init();
-    // 绑定显示函数
-    glutDisplayFunc(drawScene);
-    //绑定计时器
-    glutTimerFunc(0, update, 0);
-    //绑定鼠标函数
-    glutMouseFunc(onMouseClick);
-    glutMotionFunc(onMouseMove);
 
-    //绑定键盘
-    glutKeyboardFunc(onKeyClick);
-
-    //绑定更新函数
-    glutReshapeFunc(reshape);
-
-    
-    //initShader();
-    //frame();
-
-    glutMainLoop();
-    system("pause");
-    return 0;
-}
 
 void init() {
-    //readConfig();
+#ifdef DEBUG
+    const GLubyte* OpenGLVersion = glGetString(GL_VERSION); //返回当前OpenGL实现的版本号  
+    const GLubyte* gluVersion = gluGetString(GLU_VERSION); //返回当前GLU工具库版本
+    printf("OpenGL实现的版本号：%s\n", OpenGLVersion);
+    printf("OGLU工具库版本：%s\n", gluVersion);
+#endif // DEBUG
+    
+    readConfig();
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA);
     glutInitWindowSize(800, 600);
-    glutCreateWindow("3D Scene");
+    glutCreateWindow("Collision Detection");
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_TEXTURE);
 
     initWalls();
+    initBalls();
 }
-
 
 
 void setCamera()
@@ -159,49 +241,43 @@ void drawPolygon(Point a, Point b, Point c, Point d)
     glEnd();
 }
 
-
-
-//void readConfig()
-//{
-//    std::ifstream fin;
-//    fin.open("./config.txt");
-//    if (!fin.is_open()) {
-//        exit(-1);
-//    }
-//
-//    float tmp[18];
-//    std::string input;
-//    int k = 0;
-//    while (fin >> input) {
-//        tmp[k++] = std::stof(input);
-//        //std::cout << tmp[k - 1] << ' ';
-//    }
-//    fin.close();
-//
-//    pos1.setPoint(tmp[0], tmp[1], tmp[2]);
-//    pos2.setPoint(tmp[3], tmp[4], tmp[5]);
-//    pos3.setPoint(tmp[6], tmp[7], tmp[8]);
-//    speed.setPoint(tmp[9], tmp[10], tmp[11]);
-//    color1[0] = tmp[12];
-//    color1[1] = tmp[13];
-//    color1[2] = tmp[14];
-//    color2[0] = tmp[15];
-//    color2[1] = tmp[16];
-//    color2[2] = tmp[17];
-//}
-
 void drawScene() {
-    // 渲染原始场景到帧缓冲对象
-    //glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-
     glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
     setCamera();
    
-    //drawPolygon(Point(0, 0, 0), Point(0, 5, 0), Point(5, 5, 2), Point(5, 0, 2));
     drawWalls();
+    collisionDetection(balls, interval, length, width, height, grid_size, grid_x, grid_y, grid_z, ball_nums);
+    drawBalls();
+
 
     glutSwapBuffers();
-    //glFlush();
+}
+
+int main(int argc, char** argv) {
+#ifdef TEST
+    QueryPerformanceFrequency(&tc);
+    QueryPerformanceCounter(&t1);
+#endif // TEST
+
+    glutInit(&argc, argv);
+    init();
+    // 绑定显示函数
+    glutDisplayFunc(drawScene);
+    //绑定计时器
+    glutTimerFunc(0, update, 0);
+    //绑定鼠标函数
+    glutMouseFunc(onMouseClick);
+    glutMotionFunc(onMouseMove);
+
+    //绑定键盘
+    glutKeyboardFunc(onKeyClick);
+
+    //绑定更新函数
+    glutReshapeFunc(reshape);
+
+    glutMainLoop();
+
+    return 0;
 }
