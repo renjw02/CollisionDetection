@@ -12,11 +12,10 @@ __device__ float dist_(float x, float y, float z)
 // 精确碰撞检测
 __device__ bool isCollision(Ball& a, Ball& b)
 {
-	float dist = 0;
 	float dist_x = a.pos.x - b.pos.x;
 	float dist_y = a.pos.y - b.pos.y;
 	float dist_z = a.pos.z - b.pos.z;
-	dist = dist_(dist_x, dist_y, dist_z);
+	float dist = dist_(dist_x, dist_y, dist_z);
 	if (dist < a.radius + b.radius)
 	{
 		return true;
@@ -66,7 +65,6 @@ __device__ void updateSpeed(Ball& a, Ball& b)
 	float normal_velocity_new_b_z = ((1 - b.coefficient) * (normal_velocity_a_z * (2 * a.weight) + normal_velocity_b_z * (b.weight - a.weight))) / (a.weight + b.weight);
 
 
-
 	a.speed.x = normal_velocity_new_a_x + tangential_velocity_a_x;
 	a.speed.y = normal_velocity_new_a_y + tangential_velocity_a_y;
 	a.speed.z = normal_velocity_new_a_z + tangential_velocity_a_z;
@@ -76,45 +74,6 @@ __device__ void updateSpeed(Ball& a, Ball& b)
 	b.speed.z = normal_velocity_new_b_z + tangential_velocity_b_z;
 }
 
-__device__ void prefixSum(uint32_t *radix_sums, unsigned int n)
-{
-	int offset = 1;
-	int a;
-
-	// 归约
-	for (int d = n / 2; d; d /= 2)
-	{
-		__syncthreads();
-
-		if (threadIdx.x < d)
-		{
-			a = (threadIdx.x * 2 + 1) * offset - 1;
-			radix_sums[a + offset] += radix_sums[a];
-		}
-
-		offset *= 2;
-	}
-	if (!threadIdx.x)
-	{
-		radix_sums[n - 1] = 0;
-	}
-
-	uint32_t temp;
-	// 反向传播
-	for (int d = 1; d < n; d *= 2)
-	{
-		__syncthreads();
-		offset /= 2;
-
-		if (threadIdx.x < d)
-		{
-			a = (threadIdx.x * 2 + 1) * offset - 1;
-			temp = radix_sums[a];
-			radix_sums[a] = radix_sums[a + offset];
-			radix_sums[a + offset] += temp;
-		}
-	}
-}
 
 __global__ void updateBalls(Ball* balls, float interval, float length, float width, float height, int n)
 {
@@ -186,6 +145,7 @@ __global__ void collision(uint32_t* cells, uint32_t* objects, Ball* balls, int n
 			start = indices[cell_id - 1];
 		}
 
+		// home的个数
 		int home_num = 0;
 		for (int i = start; i < end; i++)
 		{
@@ -200,6 +160,7 @@ __global__ void collision(uint32_t* cells, uint32_t* objects, Ball* balls, int n
 			}
 		}
 
+		// 碰撞检测
 		for (int i = start; i < start + home_num; i++)
 		{
 			if (cells[i] == UINT32_MAX) break;
@@ -209,11 +170,13 @@ __global__ void collision(uint32_t* cells, uint32_t* objects, Ball* balls, int n
 			{
 				if (cells[j] == UINT32_MAX) break;
 				int ball_j = (objects[j] >> 1) & 65535;
-
+				
+				// narrow phase
+				// 直接通过球心距判断
+				// 
+				// 都是home 
 				if (j < start + home_num)
 				{
-					// narrow phase
-					// 直接通过球心距判断
 					if (isCollision(balls[ball_i], balls[ball_j]))
 					{
 						updateSpeed(balls[ball_i], balls[ball_j]);
@@ -227,10 +190,9 @@ __global__ void collision(uint32_t* cells, uint32_t* objects, Ball* balls, int n
 					int j_z = (balls[ball_j].pos.z + width) / gridSize;
 					int home_j = j_x << 16 | j_y << 8 | j_z;
 
+					// home和phantom
 					if (home_i < home_j)
 					{
-						// narrow phase
-						// 直接通过球心距判断
 						if (isCollision(balls[ball_i], balls[ball_j]))
 						{
 							updateSpeed(balls[ball_i], balls[ball_j]);
@@ -319,7 +281,45 @@ __global__ void getRadixSum(uint32_t* cells, uint32_t* radix_sums, int n, int sh
 
 	}
 	__syncthreads();
-	prefixSum(radix_sums, num_indices);
+
+	// 获取前缀和
+	int o = 1;
+	int a;
+
+	// 归约
+	for (int d = num_indices / 2; d; d /= 2)
+	{
+		__syncthreads();
+
+		if (threadIdx.x < d)
+		{
+			a = (threadIdx.x * 2 + 1) * o - 1;
+			radix_sums[a + o] += radix_sums[a];
+		}
+
+		o *= 2;
+	}
+	if (!threadIdx.x)
+	{
+		radix_sums[num_indices - 1] = 0;
+	}
+
+	// 反向传播
+	uint32_t temp;
+	for (int d = 1; d < num_indices; d *= 2)
+	{
+		__syncthreads();
+		o /= 2;
+
+		if (threadIdx.x < d)
+		{
+			a = (threadIdx.x * 2 + 1) * o - 1;
+			temp = radix_sums[a];
+			radix_sums[a] = radix_sums[a + o];
+			radix_sums[a + o] += temp;
+		}
+	}
+
 	__syncthreads();
 }
 
@@ -364,13 +364,13 @@ __global__ void init(uint32_t* cells, uint32_t* objects, Ball* balls, float leng
 					int new_hash_y = hash_y + dy;
 					int new_hash_z = hash_z + dz;
 
-
+					// 自己
 					if (dx == 0 && dy == 0 && dz == 0)
 					{
 						continue;
 					}
 
-
+					// 越界
 					if (new_hash_x < 0 || new_hash_x >= grid_x ||
 						new_hash_y < 0 || new_hash_y >= grid_y ||
 						new_hash_z < 0 || new_hash_z >= grid_z)
@@ -457,6 +457,12 @@ __global__ void init(uint32_t* cells, uint32_t* objects, Ball* balls, float leng
 void collisionDetection(Ball* balls, float refreshInterval, float length, float width, float height,
 	float gridSize, int grid_x, int grid_y, int grid_z, int n)
 {
+
+	// GPU上的小球数组
+	Ball* g_balls;
+	unsigned int nBytes = n * sizeof(Ball);
+	cudaMalloc((void**)&g_balls, nBytes);
+
 	unsigned int num_blocks = 128;
 	unsigned int threads_per_block = 512;
 	unsigned int object_size = (n - 1) / threads_per_block + 1;
@@ -464,15 +470,10 @@ void collisionDetection(Ball* balls, float refreshInterval, float length, float 
 		num_blocks = object_size;
 	}
 
-	// GPU上的小球数组
-	Ball* g_balls;
-	unsigned int nBytes = n * sizeof(Ball);
-	cudaMalloc((void**)&g_balls, nBytes);
-
 	// 将cpu数据复制到gpu上
 	cudaMemcpy((void*)g_balls, (void*)balls, nBytes, cudaMemcpyHostToDevice);
 
-	// update status for all balls
+	// 更新状态
 	updateBalls <<< num_blocks, threads_per_block >>> (g_balls, refreshInterval, length, width, height, n);
 	cudaDeviceSynchronize();
 
@@ -535,20 +536,20 @@ void radixSort(uint32_t* cells, uint32_t* objects, uint32_t* cells_temp, uint32_
 	uint32_t* radix_sums, int n, uint32_t* indices, uint32_t* num_indices, unsigned int num_blocks, 
 	unsigned int threads_per_block)
 {
-	uint32_t* cells_swap;
-	uint32_t* objects_swap;
 	for (int i = 0; i < 32; i += RADIX_LENGTH)
 	{
 		getRadixSum <<< num_blocks, threads_per_block >>> (cells, radix_sums, n, i);
 
 		arrange <<< num_blocks, threads_per_block >>> (cells, objects, cells_temp, objects_temp, radix_sums, n, i);
-
-		cells_swap = cells;
+		
+		uint32_t* cells_s = cells;
 		cells = cells_temp;
-		cells_temp = cells_swap;
-		objects_swap = objects;
+		cells_temp = cells_s;
+
+		uint32_t* objects_s = objects;
 		objects = objects_temp;
-		objects_temp = objects_swap;
+		objects_temp = objects_s;
 	}
+
 	getCellIndex <<< num_blocks, threads_per_block >>> (cells, n, indices, num_indices);
 }
